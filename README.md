@@ -3,6 +3,7 @@ Nama : Revalinda Bunga Nayla Laksono <br>
 NRP : 5027251011 <br>
 # Soal 1
 ## Deskripsi Permasalahan
+Menyelamatkan asisten Kenz dengan mengimplementasikan sebuah **filesystem virtual** menggunakan teknologi FUSE _(Filesystem in Userspace)_. Program yang dibuat harus mampu menampilkan isi dari direktori sumber ke dalam sebuah direktori mount secara transparan, seolah-olah kedua direktori tersebut memiliki isi yang sama, serta menambahkan sebuah file virtual yang tidak tersimpan secara fisik di disk namun tetap dapat diakses layaknya file biasa melalui direktori mount.
 ### Mengambil arsip `amba_files`
 ```c
 gdown 1nLXFhptDo2mnUlZsw8pTWyAVpV49W20U 
