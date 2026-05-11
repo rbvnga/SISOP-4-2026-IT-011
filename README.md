@@ -13,5 +13,7 @@ rm amba_files.zip
 folder zip amba diambil lalu diekstrak. Setelah folder berhasil di ekstrak, folder zip akan dihapus. <br>
 # Soal 2
 ## Deskripsi Permasalahan
+Membuat mini database service yang dapat diakses melalui TCP Connection bernama project MOO. <br>
 # Soal 3
 ## Deskripsi Permasalahan
+IT Library Nusantara adalah perpustakaan digital khusus bidang teknologi Informasi. Sebagai System Administrator baru di IT Library Nusantara, harus membangun infrastruktur Library IT dari nol menggunaknan DOcker dan Samba.  <br>
