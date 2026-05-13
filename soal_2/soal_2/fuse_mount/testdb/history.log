@@ -1,0 +1,4 @@
+[1778682591] CREATE TABLE testdb users email password
+
+[1778682598] INSERT testdb users test@mail.com pass123
+
