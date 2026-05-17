@@ -560,7 +560,38 @@ int main() {
 Pada loop utama, `select()` digunakan supaya program tidak harus memilih salah satu dari: menunggu input user atau menunggu response server. Dengan `select()`, , program bisa memantau dua sumber input secara bersamaan, yaitu: <br>
 - `sock` yang bersumber data yang masuk dari server
 - `STDIN_FILENO` yang menunggu input dari keyboard user <br>
-select() akan memblokir (menunggu) sampai salah satu dari keduanya ada data, lalu melanjutkan eksekusi. <br>
+`select()` akan memblokir (menunggu) sampai salah satu dari keduanya ada data, lalu melanjutkan eksekusi. <br>
+## Dockerfile
+```
+FROM ubuntu:latest
+
+RUN apt-get update && apt-get install -y \
+    fuse3 \
+    libfuse3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY server fuse entrypoint.sh .
+RUN chmod +x server fuse entrypoint.sh
+RUN mkdir -p /app/db /app/encrypted_storage
+
+EXPOSE 9000
+CMD ["./entrypoint.sh"]
+```
+Dockerfile digunakan untuk membangun image Docker dari aplikasi mini database MOO. diawali dengan penentuan base image lalu instalansi dpendencies kemudian  penetapan direktori kerja `/app` menggunakan `WORKDIR`. Terdapat 3 file utama yaitu server, fuse, dan entrypoint.sh disalin ke dalam container menggunakan COPY dan diberikan permission execute menggunakan chmod +x, serta dibuat dua direktori `/app/db` sebagai mount point FUSE dan `/app/encrypted_storage` sebagai tempat penyimpanan file terenkripsi. <br>
+## entrypoint.sh
+```````bash
+mkdir -p /app/db
+./fuse /app/db    # Mount FUSE dulu
+sleep 1           # Tunggu FUSE siap
+exec ./server     # Baru jalankan server
+```````
+<img width="703" height="137" alt="2_containerization" src="https://github.com/user-attachments/assets/84976813-99c1-4676-a414-32b9ac6fd2fc" /> <br>
+<img width="1729" height="749" alt="2_hasil eksekusi" src="https://github.com/user-attachments/assets/9f1799a4-0797-4358-a3dc-dce53ec1d50e" /> <br>
+<img width="1141" height="79" alt="2_Docker" src="https://github.com/user-attachments/assets/239b712b-d1e5-4563-82cc-f6ccbd67ae08" /> <br>
+
+
+
 # Soal 3
 ## Deskripsi Permasalahan
 IT Library Nusantara adalah perpustakaan digital khusus bidang teknologi Informasi. Sebagai System Administrator baru di IT Library Nusantara, harus membangun infrastruktur Library IT dari nol menggunaknan DOcker dan Samba.  <br>
