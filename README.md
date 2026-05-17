@@ -258,6 +258,309 @@ int main(int argc, char *argv[])
 # Soal 2
 ## Deskripsi Permasalahan
 Membuat mini database service yang dapat diakses melalui TCP Connection bernama project MOO. <br>
+## fuse.c 
+```c
+#define FUSE_USE_VERSION 31
+
+#include <fuse3/fuse.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+// Ekstensi file terenkripsi
+#define ENC_EXT ".enc"
+#define XOR_KEY 0x76
+static const char *encrypted_storage = "/app/encrypted_storage";
+
+// Fungsi XOR encrypt/decrypt (sama karena XOR)
+static void xor_data(char *buf, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        buf[i] ^= XOR_KEY;
+    }
+}
+
+// Ubah path fuse_mount → encrypted_storage + tambah .enc
+static void get_enc_path(char enc_path[], const char *path) {
+    snprintf(enc_path, 1024, "%s%s%s", encrypted_storage, path, ENC_EXT);
+}
+
+// Cek apakah path adalah direktori
+static int is_dir(const char *path) {
+    char enc_path[1024];
+    snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+    struct stat st;
+    if (stat(enc_path, &st) == 0 && S_ISDIR(st.st_mode)) return 1;
+    return 0;
+}
+
+static int xmp_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
+    char enc_path[1024];
+    int res;
+
+    if (is_dir(path)) {
+        snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+        res = stat(enc_path, stbuf);
+    } else {
+        get_enc_path(enc_path, path);
+        res = stat(enc_path, stbuf);
+    }
+
+    if (res == -1) return -errno;
+    return 0;
+}
+
+static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                        off_t offset, struct fuse_file_info *fi,
+                        enum fuse_readdir_flags flags) {
+    char enc_path[1024];
+    snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+
+    DIR *dp = opendir(enc_path);
+    if (!dp) return -errno;
+
+    filler(buf, ".", NULL, 0, 0);
+    filler(buf, "..", NULL, 0, 0);
+
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+
+        char name[256];
+        strncpy(name, de->d_name, sizeof(name));
+
+        // Hapus .enc dari nama file saat ditampilkan
+        char *ext = strstr(name, ENC_EXT);
+        if (ext) *ext = '\0';
+
+        filler(buf, name, NULL, 0, 0);
+    }
+
+    closedir(dp);
+    return 0;
+}
+
+static int xmp_mkdir(const char *path, mode_t mode) {
+    char enc_path[1024];
+    snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+    if (mkdir(enc_path, mode) == -1) return -errno;
+    return 0;
+}
+
+static int xmp_rmdir(const char *path) {
+    char enc_path[1024];
+    snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+    if (rmdir(enc_path) == -1) return -errno;
+    return 0;
+}
+
+static int xmp_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+    char enc_path[1024];
+    get_enc_path(enc_path, path);
+    int fd = open(enc_path, fi->flags | O_CREAT, mode);
+    if (fd == -1) return -errno;
+    fi->fh = fd;
+    return 0;
+}
+
+static int xmp_open(const char *path, struct fuse_file_info *fi) {
+    char enc_path[1024];
+    get_enc_path(enc_path, path);
+    int fd = open(enc_path, fi->flags);
+    if (fd == -1) return -errno;
+    fi->fh = fd;
+    return 0;
+}
+
+static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
+                    struct fuse_file_info *fi) {
+    int res = pread(fi->fh, buf, size, offset);
+    if (res == -1) return -errno;
+    xor_data(buf, res); // Dekripsi saat dibaca
+    return res;
+}
+
+static int xmp_write(const char *path, const char *buf, size_t size, off_t offset,
+                     struct fuse_file_info *fi) {
+    char *enc_buf = malloc(size);
+    if (!enc_buf) return -ENOMEM;
+    memcpy(enc_buf, buf, size);
+    xor_data(enc_buf, size); // Enkripsi saat ditulis
+    int res = pwrite(fi->fh, enc_buf, size, offset);
+    free(enc_buf);
+    if (res == -1) return -errno;
+    return res;
+}
+
+static int xmp_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
+    char enc_path[1024];
+    get_enc_path(enc_path, path);
+    if (truncate(enc_path, size) == -1) return -errno;
+    return 0;
+}
+
+static int xmp_unlink(const char *path) {
+    char enc_path[1024];
+    get_enc_path(enc_path, path);
+    if (unlink(enc_path) == -1) return -errno;
+    return 0;
+}
+
+static int xmp_access(const char *path, int mask) {
+    char enc_path[1024];
+    if (is_dir(path))
+        snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+    else
+        get_enc_path(enc_path, path);
+    if (access(enc_path, mask) == -1) return -errno;
+    return 0;
+}
+
+static int xmp_utimens(const char *path, const struct timespec ts[2],
+                        struct fuse_file_info *fi) {
+    char enc_path[1024];
+    if (is_dir(path))
+        snprintf(enc_path, 1024, "%s%s", encrypted_storage, path);
+    else
+        get_enc_path(enc_path, path);
+    if (utimensat(0, enc_path, ts, 0) == -1) return -errno;
+    return 0;
+}
+
+static int xmp_release(const char *path, struct fuse_file_info *fi) {
+    close(fi->fh);
+    return 0;
+}
+static const struct fuse_operations xmp_oper = {
+    .getattr  = xmp_getattr,
+    .readdir  = xmp_readdir,
+    .mkdir    = xmp_mkdir,
+    .rmdir    = xmp_rmdir,
+    .create   = xmp_create,
+    .open     = xmp_open,
+    .read     = xmp_read,
+    .write    = xmp_write,
+    .truncate = xmp_truncate,
+    .unlink   = xmp_unlink,
+    .access   = xmp_access,
+    .utimens  = xmp_utimens,
+    .release  = xmp_release,
+};
+
+int main(int argc, char *argv[]) {
+    return fuse_main(argc, argv, &xmp_oper, NULL);
+}
+```
+fuse.c akan menghubungkan dua direktori `encrypted_storage` (file terenkripsi) dan direktori `fuse_mount` (file terbaca normal). Setiap file yang ditulis melalui fuse_mount akan otomatis dienkripsi menggunakan algoritma **XOR dengan key 0x76 **dan disimpan di `encrypted_storage` dengan ekstensi `.enc`. Sebaliknya, saat dibaca melalui `fuse_mount`, file akan otomatis didekripsi. <br>
+- `XOR_data()` , melakukan enkripsi dan Dekripsi dengen operasi **XOR** yang bersifat simetris, pada setiap byte data dengan key `0x76`.
+- `get_enc_path()` Mengubah path virtual (dari `fuse_mount`) menjadi path nyata di `encrypted_storage` dan menambahkan ekstensi `.enc` di akhir nama file
+- `is_dir()` akan mengecek apakah sebuah path adalah direktori atau file, karena direktori tidak memerlukan ekstensi `.enc`
+- `fuse_operations` adalah struct yang mendaftarkan semua fungsi ke FUSE
+### Implementasi Operasi FUSE
+1. `xmp_getattr()` Dipanggil setiap kali sistem perlu mengetahui informasi file (ukuran, permission, waktu modifikasi) <br>
+- Jika path adalah direktori → ambil atribut dari `encrypted_storage/path`
+- Jika path adalah file → ambil atribut dari `encrypted_storage/path.enc` <br>
+2. `xmp_readdir()` Dipanggil saat perintah `ls` dijalankan di dalam fuse_mount <br>
+3. `xmp_mkdir()` untuk membuat folder baru di `encrypted_storage` <br>
+4. `xmp_rmdir()` untuk menghapus folder dari `encrypted_storage` <br>
+5. `xmp_create()` Dipanggil saat file baru dibuat di `fuse_mount` <br>
+6. `xmp_open()` Dipanggil saat file dibuka (untuk dibaca/ditulis) <br>
+7. `xmp_read()` untuk membaca file <br>
+- program akan membaca data dari file `.enc` menggunakan `pread()`
+- Mendekripsi data dengan `xor_data()` sebelum dikembalikan ke user <br>
+8. `xmp_write()` untuk menulis isi file dan mengenkripsinya <br>
+- program akan menerima dan mengenkrisi data dari user dengan `xor_data()`
+- Menyimpan data terenkripsi ke file `.enc` menggunakan `pwrite()`
+- Menggunakan `malloc()` untuk buffer sementara agar data asli tidak berubah <br>
+9. `xmp_truncate()` untuk mengubah ukuran file di `encrypted_storage`, fungsi ini dipaggil saat file di-overwrite atau dikosongkan <br>
+10. `xmp_unlink()` untuk menghapus file `.enc` dari `encrypted_storage`, fungsi ini dipanggil saat perintah `rm` di jalankan di fuse_mount <br>
+11. `xmp_access()` untuk mengecek apakah user punya izin untuk mengakses file/folder <br>
+12. `xmp_utimens()` untuk memperbarui timestamp (waktu akses dan modifikasi) file, fungsi ini dipanggil otomatis saat file dibuat atau dimodifikasi. <br>
+13. `xmp_release()` akan menutup file descriptor setelah selesai digunakan supaya mencegah memory/resource leak <br>
+## client.c 
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/select.h>
+
+#define PORT 9000
+#define HOST "127.0.0.1"
+#define BUFFER_SIZE 4096
+
+int main() {
+    // inisialisasi Socket 
+    int sock;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+    char command[BUFFER_SIZE];
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("Socket failed");
+        exit(1);
+    }
+
+   // Konfigurasi alamat server
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, HOST, &server_addr.sin_addr);
+
+    // Koneksi ke Server
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Connection failed");
+        exit(1);
+    }
+    printf("Connected to DB Server on port %d\n", PORT);
+    printf("Type HELP for available commands\n");
+    printf("Type EXIT to quit\n\n");
+
+    while (1) {
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+        FD_SET(STDIN_FILENO, &fds);
+
+        select(sock + 1, &fds, NULL, NULL, NULL);
+
+        // Ada data dari server
+        if (FD_ISSET(sock, &fds)) {
+            memset(buffer, 0, BUFFER_SIZE);
+            int bytes = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+            if (bytes <= 0) {
+                printf("Server disconnected\n");
+                break;
+            }
+            printf("%s", buffer);
+            fflush(stdout);
+        }
+
+        // Mengirim perintah ke server (ada input dari user)
+        if (FD_ISSET(STDIN_FILENO, &fds)) {
+            memset(command, 0, BUFFER_SIZE);
+            printf("db > ");
+            fflush(stdout);
+            if (fgets(command, BUFFER_SIZE, stdin) == NULL) break;
+            send(sock, command, strlen(command), 0);
+            if (strncmp(command, "EXIT", 4) == 0) break;
+        }
+    }
+
+   // penutupan koneksi
+    close(sock);
+    return 0;
+}
+```
+Pada loop utama, `select()` digunakan supaya program tidak harus memilih salah satu dari: menunggu input user atau menunggu response server. Dengan `select()`, , program bisa memantau dua sumber input secara bersamaan, yaitu: <br>
+- `sock` yang bersumber data yang masuk dari server
+- `STDIN_FILENO` yang menunggu input dari keyboard user <br>
+select() akan memblokir (menunggu) sampai salah satu dari keduanya ada data, lalu melanjutkan eksekusi. <br>
 # Soal 3
 ## Deskripsi Permasalahan
 IT Library Nusantara adalah perpustakaan digital khusus bidang teknologi Informasi. Sebagai System Administrator baru di IT Library Nusantara, harus membangun infrastruktur Library IT dari nol menggunaknan DOcker dan Samba.  <br>
